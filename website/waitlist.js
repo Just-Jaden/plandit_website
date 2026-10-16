@@ -45,6 +45,11 @@
         .then(function (response) {
           if (!response.ok) throw new Error("Request failed");
           setStatus("success", "You’re on the list. We’ll let you know when Plandit is ready.");
+          if (typeof window.gtag === "function") {
+            window.gtag("event", "waitlist_signup", {
+              form_location: "homepage"
+            });
+          }
           form.reset();
         })
         .catch(function () {
