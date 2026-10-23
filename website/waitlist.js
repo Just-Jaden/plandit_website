@@ -7,6 +7,8 @@
     var input = form.querySelector('input[type="email"]');
     var button = form.querySelector('button[type="submit"]');
     var status = form.querySelector(".form-status");
+    var source = form.dataset.source || "homepage";
+    var location = form.dataset.location || "closing";
 
     function setStatus(kind, message) {
       status.className = "form-status" + (kind ? " is-" + kind : "");
@@ -40,20 +42,27 @@
       fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Accept": "application/json" },
-        body: JSON.stringify({ email: email, source: "plandit.app" })
+        body: JSON.stringify({ email: email, source: source })
       })
         .then(function (response) {
           if (!response.ok) throw new Error("Request failed");
           setStatus("success", "You’re on the list. We’ll let you know when Plandit is ready.");
           if (typeof window.gtag === "function") {
             window.gtag("event", "waitlist_signup", {
-              form_location: "homepage"
+              campaign_page: source,
+              form_location: location
             });
           }
           form.reset();
         })
         .catch(function () {
           setStatus("error", "That did not go through. Please try again.");
+          if (typeof window.gtag === "function") {
+            window.gtag("event", "waitlist_error", {
+              campaign_page: source,
+              form_location: location
+            });
+          }
         })
         .finally(function () {
           button.disabled = false;
