@@ -1,0 +1,31 @@
+{
+  "name": "plandit-website",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Plandit marketing site, blog generator, and Sanity Studio",
+  "type": "module",
+  "workspaces": [
+    "studio"
+  ],
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "build": "npm run build:blog && npm run build:studio",
+    "build:blog": "node scripts/build-blog.mjs",
+    "build:studio": "node scripts/build-studio.mjs",
+    "dev:studio": "sanity dev --config studio/sanity.config.ts",
+    "seed:blog": "node scripts/seed-blog.mjs"
+  },
+  "dependencies": {
+    "@portabletext/to-html": "6.0.0",
+    "@sanity/client": "8.11.0"
+  },
+  "devDependencies": {
+    "@sanity/vision": "6.20.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "sanity": "6.20.0",
+    "styled-components": "6.6.0"
+  }
+}
