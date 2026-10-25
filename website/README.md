@@ -11,6 +11,28 @@ Each campaign has email CTAs in the hero and closing section. Formspree stores s
 campaign page as the `source`; GA4 records successful signups and errors by page and form location.
 Vercel Web Analytics records page-level traffic after it is enabled for the project.
 
+## Blog and private editor
+
+- Public index: `/blog`
+- Public articles: `/blog/{slug}`
+- Invite-only Sanity Studio: `/studio`
+
+Vercel runs `npm run build`, which fetches published Sanity posts, creates static article pages,
+updates `sitemap.xml`, and builds Sanity Studio. If Sanity is not connected yet, the build uses a
+local sample article and `/studio` displays setup instructions.
+
+Required Vercel environment variables:
+
+- `SANITY_PROJECT_ID`
+- `SANITY_DATASET` (`production`)
+- `SANITY_STUDIO_PROJECT_ID` (same project ID)
+- `SANITY_STUDIO_DATASET` (`production`)
+
+After creating the Sanity project, add `https://plandit.app` as a CORS origin in Sanity Manage,
+invite internal writers, and create a Sanity webhook that calls a Vercel Deploy Hook when a
+published `post` changes. To copy the sample post into Sanity, create an Editor token and run
+`SANITY_WRITE_TOKEN=... npm run seed:blog` locally; do not store that token in the repository.
+
 ## Preview locally
 
 Run a local server from this folder:
