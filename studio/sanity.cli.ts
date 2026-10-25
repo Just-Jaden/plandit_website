@@ -8,4 +8,7 @@ export default defineCliConfig({
     projectId: process.env.SANITY_STUDIO_PROJECT_ID,
     dataset: process.env.SANITY_STUDIO_DATASET || 'production',
   },
+  deployment: {
+    appId: 'n2hdh24r4mc6dmxmhc9cv4vo',
+  },
 })
