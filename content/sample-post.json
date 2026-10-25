@@ -1,0 +1,112 @@
+{
+  "_id": "sample-five-nyc-stops",
+  "_type": "post",
+  "title": "5 NYC stops for a low-stress Saturday downtown",
+  "slug": "5-nyc-stops-low-stress-saturday",
+  "excerpt": "A bookstore, a market, green space, and two easy stops you can combine without spending the whole day crossing the city.",
+  "author": {
+    "name": "Plandit",
+    "role": "Plandit city guide"
+  },
+  "category": "NYC day plans",
+  "tags": ["New York City", "Saturday plans", "Downtown"],
+  "publishedAt": "2026-10-25T12:00:00.000Z",
+  "coverUrl": "/images/photo-picnic.jpg",
+  "coverAlt": "Friends relaxing together in a sunny waterfront park.",
+  "ctaVariant": "waitlist",
+  "seoTitle": "5 NYC stops for a low-stress Saturday downtown | Plandit",
+  "seoDescription": "Build an easy downtown NYC day around a bookstore, market, park, and waterfront stops without wasting the day in transit.",
+  "body": [
+    {
+      "_type": "block",
+      "_key": "intro",
+      "style": "normal",
+      "markDefs": [],
+      "children": [
+        {
+          "_type": "span",
+          "_key": "intro-span",
+          "marks": [],
+          "text": "A good day out does not need twelve stops or a perfect spreadsheet. Pick a few places in the same part of the city, leave room between them, and know what the day will roughly cost before you go."
+        }
+      ]
+    },
+    {
+      "_type": "block",
+      "_key": "one",
+      "style": "h2",
+      "markDefs": [],
+      "children": [{"_type": "span", "_key": "one-span", "marks": [], "text": "1. Start around Washington Square Park"}]
+    },
+    {
+      "_type": "block",
+      "_key": "one-body",
+      "style": "normal",
+      "markDefs": [],
+      "children": [{"_type": "span", "_key": "one-body-span", "marks": [], "text": "Use the park as an easy meeting point. It gives the group somewhere specific to begin without requiring anyone to commit money before the day has started."}]
+    },
+    {
+      "_type": "block",
+      "_key": "two",
+      "style": "h2",
+      "markDefs": [],
+      "children": [{"_type": "span", "_key": "two-span", "marks": [], "text": "2. Browse a neighborhood bookstore"}]
+    },
+    {
+      "_type": "block",
+      "_key": "two-body",
+      "style": "normal",
+      "markDefs": [],
+      "children": [{"_type": "span", "_key": "two-body-span", "marks": [], "text": "A bookstore gives the day a flexible stop: stay for fifteen minutes or an hour. Choose one already on your saved list and check its current hours before heading over."}]
+    },
+    {
+      "_type": "block",
+      "_key": "three",
+      "style": "h2",
+      "markDefs": [],
+      "children": [{"_type": "span", "_key": "three-span", "marks": [], "text": "3. Make lunch the main paid stop"}]
+    },
+    {
+      "_type": "block",
+      "_key": "three-body",
+      "style": "normal",
+      "markDefs": [],
+      "children": [{"_type": "span", "_key": "three-body-span", "marks": [], "text": "A market or food hall works well when the group has different tastes and budgets. Everyone can choose their own price point without splitting the day into separate plans."}]
+    },
+    {
+      "_type": "block",
+      "_key": "four",
+      "style": "h2",
+      "markDefs": [],
+      "children": [{"_type": "span", "_key": "four-span", "marks": [], "text": "4. Walk one interesting stretch instead of taking another train"}]
+    },
+    {
+      "_type": "block",
+      "_key": "four-body",
+      "style": "normal",
+      "markDefs": [],
+      "children": [{"_type": "span", "_key": "four-body-span", "marks": [], "text": "The walk between stops can be part of the plan. Keep the route compact enough that moving around does not become the most tiring part of the day."}]
+    },
+    {
+      "_type": "block",
+      "_key": "five",
+      "style": "h2",
+      "markDefs": [],
+      "children": [{"_type": "span", "_key": "five-span", "marks": [], "text": "5. End near the waterfront"}]
+    },
+    {
+      "_type": "block",
+      "_key": "five-body",
+      "style": "normal",
+      "markDefs": [],
+      "children": [{"_type": "span", "_key": "five-body-span", "marks": [], "text": "Finish somewhere that does not require a reservation or strict arrival time. A waterfront park gives the day a natural ending while leaving everyone free to stay longer or head home."}]
+    },
+    {
+      "_type": "block",
+      "_key": "close",
+      "style": "normal",
+      "markDefs": [],
+      "children": [{"_type": "span", "_key": "close-span", "marks": ["strong"], "text": "Before going, confirm current opening hours, prices, and any reservation requirements directly with each place."}]
+    }
+  ]
+}

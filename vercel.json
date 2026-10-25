@@ -1,5 +1,6 @@
 {
   "framework": null,
+  "buildCommand": "npm run build",
   "outputDirectory": "website",
   "cleanUrls": true,
   "trailingSlash": false,
@@ -8,6 +9,9 @@
     { "source": "/make-plans.html", "destination": "/#how-it-works", "permanent": true },
     { "source": "/share-plans", "destination": "/#for-friends", "permanent": true },
     { "source": "/share-plans.html", "destination": "/#for-friends", "permanent": true }
+  ],
+  "rewrites": [
+    { "source": "/studio/(.*)", "destination": "/studio/index.html" }
   ],
   "headers": [
     {

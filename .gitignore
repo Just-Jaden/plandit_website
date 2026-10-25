@@ -1,6 +1,10 @@
 .env
 .env.*
+!.env.example
 .DS_Store
 node_modules/
+studio/.sanity/
 __pycache__/
 .vercel
+website/blog/
+website/studio/
