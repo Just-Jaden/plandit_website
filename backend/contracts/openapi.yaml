@@ -1,0 +1,331 @@
+openapi: 3.1.0
+info:
+  title: Plandit API (place resolution, accounts and metrics)
+  version: 0.2.0
+security:
+  - supabaseJwt: []
+paths:
+  /api/me/:
+    delete:
+      operationId: deleteAccount
+      summary: Delete the caller's account (Supabase auth user, then every Plandit row, then Sign in with Apple tokens)
+      requestBody:
+        required: false
+        description: |
+          Sent by Apple accounts: a fresh Sign in with Apple authorization code the app just obtained.
+          After the deletion is committed the server exchanges it and revokes the tokens (App Store
+          guideline 5.1.1(v)). Best effort: a revocation failure is logged and the deletion stands. A
+          code that is blank, longer than 1024 characters or not printable ASCII counts as no code. No
+          body for email accounts.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                apple_authorization_code:
+                  type: string
+                  maxLength: 1024
+      responses:
+        "204":
+          description: Account deleted
+        "401":
+          description: Missing or invalid bearer token
+        "502":
+          description: Supabase could not delete the auth user; nothing was deleted, retry later
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Detail"
+  /api/me/snapshot/:
+    get:
+      operationId: getSnapshot
+      summary: The app's whole local store for this account, exactly as last PUT
+      responses:
+        "200":
+          description: Current snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Snapshot"
+        "404":
+          description: No snapshot yet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Detail"
+    put:
+      operationId: putSnapshot
+      summary: Replace the snapshot (last writer wins; version increments from 1)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data]
+              properties:
+                data:
+                  $ref: "#/components/schemas/StoreSnapshot"
+      responses:
+        "200":
+          description: Stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotReceipt"
+        "400":
+          description: "`data` is missing or not a JSON object"
+        "413":
+          description: Serialized `data` is over 1,000,000 bytes
+  /api/me/events/:
+    post:
+      operationId: postEvent
+      summary: Report a usage event (120/min per user)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EventRequest"
+      responses:
+        "201":
+          description: Stored; `occurred_at` is the clamped value
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Event"
+        "400":
+          description: Unknown `name` or unparsable `occurred_at`
+        "429":
+          description: Throttled
+  /api/metrics/:
+    get:
+      operationId: getMetrics
+      summary: Aggregate usage for the course staff (counts only, never emails)
+      security:
+        - metricsKeyHeader: []
+        - metricsKeyQuery: []
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 365, default: 30 }
+          description: Length of the `daily` series, ending today (America/New_York)
+      responses:
+        "200":
+          description: Metrics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Metrics"
+        "400":
+          description: "`days` is not an integer from 1 to 365"
+        "403":
+          description: Missing or wrong key
+        "404":
+          description: Endpoint is off (`METRICS_API_KEY` not configured)
+        "429":
+          description: Throttled (30/min per IP)
+  /v1/place-resolutions:
+    post:
+      operationId: createPlaceResolution
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResolutionRequest"
+      responses:
+        "200":
+          description: Candidate places
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResolutionResponse"
+        "400":
+          description: Typed validation or evidence error
+components:
+  securitySchemes:
+    supabaseJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Supabase Auth access token
+    metricsKeyHeader:
+      type: apiKey
+      in: header
+      name: X-Metrics-Key
+    metricsKeyQuery:
+      type: apiKey
+      in: query
+      name: key
+  schemas:
+    Detail:
+      type: object
+      required: [detail]
+      properties:
+        detail: { type: string }
+    StoreSnapshot:
+      type: object
+      description: >-
+        The iOS `StoreSnapshot` exactly as the app encodes it (camelCase keys, ISO 8601 dates).
+        Stored opaquely and returned unchanged. The server only reads `saved`, `pastPlans`,
+        `today.stops` (counts, activation) and `profile` (mirrored into /api/me/).
+      properties:
+        saved: { type: array, items: { type: object } }
+        today:
+          type: object
+          properties:
+            stops: { type: array, items: { type: object } }
+        pastPlans: { type: array, items: { type: object } }
+        visited: { type: array, items: { type: object } }
+        profile:
+          type: object
+          properties:
+            name: { type: string }
+            school: { type: string }
+            homeBase: { type: string }
+            defaultBudget: { type: number, minimum: 0, maximum: 10000 }
+            travelModes: { type: string }
+      additionalProperties: true
+    SnapshotReceipt:
+      type: object
+      required: [version, updated_at]
+      properties:
+        version: { type: integer, minimum: 1 }
+        updated_at: { type: string, format: date-time }
+    Snapshot:
+      allOf:
+        - $ref: "#/components/schemas/SnapshotReceipt"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/StoreSnapshot"
+    EventName:
+      type: string
+      enum: [link_saved, place_saved, plan_built]
+    EventRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          $ref: "#/components/schemas/EventName"
+        occurred_at:
+          type: string
+          format: date-time
+          description: Optional; clamped to [now - 7 days, now]. Missing means now.
+    Event:
+      type: object
+      required: [name, occurred_at]
+      properties:
+        name:
+          $ref: "#/components/schemas/EventName"
+        occurred_at: { type: string, format: date-time }
+    Metrics:
+      type: object
+      required: [product, generated_at, timezone, definitions, totals, daily]
+      properties:
+        product: { type: string, const: Plandit }
+        generated_at: { type: string, format: date-time }
+        timezone: { type: string, const: America/New_York }
+        definitions:
+          type: object
+          required: [signup, real_user, active_user]
+          properties:
+            signup: { type: string }
+            real_user: { type: string }
+            active_user: { type: string }
+        totals:
+          type: object
+          required:
+            [
+              signups,
+              real_users,
+              activation_rate,
+              active_users_today,
+              active_users_7d,
+              active_users_30d,
+              plans_built,
+              places_saved,
+              links_saved,
+              waitlist_signups,
+              anonymous_sessions,
+            ]
+          properties:
+            signups: { type: integer }
+            real_users: { type: integer }
+            activation_rate: { type: number, minimum: 0, maximum: 1 }
+            active_users_today: { type: integer }
+            active_users_7d: { type: integer }
+            active_users_30d: { type: integer }
+            plans_built: { type: integer }
+            places_saved: { type: integer }
+            links_saved: { type: integer }
+            waitlist_signups: { type: integer }
+            anonymous_sessions: { type: integer }
+        daily:
+          type: array
+          description: Exactly `days` entries, oldest to newest, ending today, zero-filled
+          items:
+            $ref: "#/components/schemas/DailyMetrics"
+    DailyMetrics:
+      type: object
+      required: [date, signups, new_real_users, active_users, plans_built, places_saved, links_saved]
+      properties:
+        date: { type: string, format: date }
+        signups: { type: integer }
+        new_real_users: { type: integer }
+        active_users: { type: integer }
+        plans_built: { type: integer }
+        places_saved: { type: integer }
+        links_saved: { type: integer }
+    ResolutionRequest:
+      type: object
+      required: [requestId, platform, evidence]
+      properties:
+        requestId:
+          type: string
+          format: uuid
+        platform:
+          type: string
+          enum: [tiktok, instagram, video]
+        sourceUrl:
+          type: string
+          format: uri
+        evidence:
+          type: object
+          properties:
+            userText:
+              type: string
+              maxLength: 5000
+    ResolutionResponse:
+      type: object
+      required: [requestId, candidates]
+      properties:
+        requestId:
+          type: string
+          format: uuid
+        source:
+          type: [object, "null"]
+        candidates:
+          type: array
+          maxItems: 3
+          items:
+            $ref: "#/components/schemas/PlaceCandidate"
+    PlaceCandidate:
+      type: object
+      required:
+        [id, provider, providerPlaceId, name, category, address, neighborhood, latitude, longitude, confidence, reason]
+      properties:
+        id: { type: string }
+        provider: { type: string }
+        providerPlaceId: { type: string }
+        name: { type: string }
+        category: { type: string }
+        address: { type: string }
+        neighborhood: { type: string }
+        latitude: { type: number }
+        longitude: { type: number }
+        confidence: { type: string, enum: [high, medium, low] }
+        reason: { type: string }
+        estimatedCost: { type: [number, "null"] }

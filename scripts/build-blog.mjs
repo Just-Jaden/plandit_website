@@ -119,7 +119,7 @@ const footer = `
   <div class="shell footer-grid">
     <a class="logo footer-logo" href="/" aria-label="Plandit home"><img src="/images/logo-mark-app-icon.png" width="40" height="40" alt=""><span>Pland<span>it</span></span></a>
     <p>Saved places.<br>Real plans.</p>
-    <div class="footer-links"><a href="/blog">Blog</a><a href="/group-plans">Group plans</a><a href="/free-window">Short plans</a></div>
+    <div class="footer-links"><a href="/blog">Blog</a><a href="/group-plans">Group plans</a><a href="/free-window">Short plans</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/support">Support</a></div>
     <p class="copyright">© 2026 Plandit. Made for days worth leaving the house for.</p>
   </div>
 </footer>`
@@ -279,11 +279,16 @@ const writeSitemap = async (posts) => {
     ['https://plandit.app/blog', '0.9'],
     ['https://plandit.app/group-plans', '0.8'],
     ['https://plandit.app/free-window', '0.8'],
+    ['https://plandit.app/terms', null],
+    ['https://plandit.app/privacy', null],
+    ['https://plandit.app/support', null],
   ]
   const urls = [
     ...staticUrls.map(
       ([url, priority]) =>
-        `  <url><loc>${url}</loc><changefreq>weekly</changefreq><priority>${priority}</priority></url>`,
+        priority
+          ? `  <url><loc>${url}</loc><changefreq>weekly</changefreq><priority>${priority}</priority></url>`
+          : `  <url><loc>${url}</loc></url>`,
     ),
     ...posts.map(
       (post) =>

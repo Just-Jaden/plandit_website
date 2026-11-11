@@ -1,0 +1,815 @@
+import Foundation
+import MapKit
+
+struct ExtractionResult: Sendable {
+    var canonicalURL: URL?
+    var creatorHandle: String?
+    var caption: String?
+    var thumbnailURL: URL?
+    var candidates: [PlaceCandidate]
+    var autoConfirmedCandidateID: String? = nil
+
+    init(
+        canonicalURL: URL? = nil,
+        creatorHandle: String? = nil,
+        caption: String? = nil,
+        thumbnailURL: URL? = nil,
+        candidates: [PlaceCandidate],
+        autoConfirmedCandidateID: String? = nil
+    ) {
+        self.canonicalURL = canonicalURL
+        self.creatorHandle = creatorHandle
+        self.caption = caption
+        self.thumbnailURL = thumbnailURL
+        self.candidates = candidates
+        self.autoConfirmedCandidateID = autoConfirmedCandidateID
+    }
+}
+
+protocol PlaceExtracting: Sendable {
+    func extract(from url: URL, sharedText: String?) async throws -> ExtractionResult
+    func resolve(evidence: String, platform: SourcePlatform) async throws -> ExtractionResult
+}
+
+protocol SocialMetadataProviding: Sendable {
+    func metadata(for url: URL) async throws -> SocialMetadata?
+}
+
+protocol PlaceSearching: Sendable {
+    func search(evidence: String) async throws -> [PlaceCandidate]
+}
+
+struct SocialMetadata: Sendable {
+    var canonicalURL: URL? = nil
+    var title: String?
+    var authorHandle: String?
+    var thumbnailURL: URL?
+    var searchEvidence: String? = nil
+
+    var hasPlaceEvidence: Bool {
+        [searchEvidence, title].contains {
+            $0?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        }
+    }
+}
+
+struct FixturePlaceExtractor: PlaceExtracting {
+    let metadataProvider: (any SocialMetadataProviding)?
+    let placeSearcher: (any PlaceSearching)?
+
+    init(
+        metadataProvider: (any SocialMetadataProviding)? = Self.defaultMetadataProvider,
+        placeSearcher: (any PlaceSearching)? = MapKitPlaceSearcher()
+    ) {
+        self.metadataProvider = metadataProvider
+        self.placeSearcher = placeSearcher
+    }
+
+    private static var defaultMetadataProvider: any SocialMetadataProviding {
+#if DEBUG && targetEnvironment(simulator)
+        FallbackSocialMetadataProvider(
+            primary: DevelopmentSocialEvidenceClient(),
+            fallback: TikTokOEmbedClient()
+        )
+#else
+        // The signed-in account's token; the extractor never signs anyone in on its own.
+        if let configuration = ProductionAPIConfiguration.current, let auth = SupabaseAuthClient.shared {
+            let endpoint = configuration.apiBaseURL.appending(path: "v1/social-evidence")
+            return FallbackSocialMetadataProvider(
+                primary: DevelopmentSocialEvidenceClient(
+                    endpoint: endpoint,
+                    accessTokenProvider: auth
+                ),
+                fallback: TikTokOEmbedClient()
+            )
+        }
+        return TikTokOEmbedClient()
+#endif
+    }
+
+    func extract(from url: URL, sharedText: String?) async throws -> ExtractionResult {
+        let metadata: SocialMetadata?
+        do {
+            metadata = try await metadataProvider?.metadata(for: url)
+        } catch let error as DevelopmentSocialEvidenceError {
+            guard Self.hasMeaningfulSharedText(sharedText) else { throw error }
+            metadata = nil
+        } catch {
+            metadata = nil
+        }
+        let evidence = [metadata?.searchEvidence, metadata?.title, sharedText]
+            .compactMap { $0 }
+            .joined(separator: "\n")
+        let candidates = try await candidates(matching: evidence)
+        return ExtractionResult(
+            canonicalURL: metadata?.canonicalURL,
+            creatorHandle: metadata?.authorHandle,
+            caption: metadata?.title ?? sharedText,
+            thumbnailURL: metadata?.thumbnailURL,
+            candidates: candidates,
+            autoConfirmedCandidateID: Self.autoConfirmedCandidateID(
+                candidates: candidates,
+                evidence: evidence
+            )
+        )
+    }
+
+    private static func hasMeaningfulSharedText(_ value: String?) -> Bool {
+        let withoutURLs = value?.replacingOccurrences(
+            of: #"https?://\S+"#,
+            with: "",
+            options: .regularExpression
+        )
+        return withoutURLs?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty == false
+    }
+
+    func resolve(evidence: String, platform: SourcePlatform) async throws -> ExtractionResult {
+        let candidates = try await candidates(matching: evidence)
+        return ExtractionResult(
+            caption: evidence,
+            candidates: candidates,
+            autoConfirmedCandidateID: Self.autoConfirmedCandidateID(
+                candidates: candidates,
+                evidence: evidence
+            )
+        )
+    }
+
+    private static func autoConfirmedCandidateID(
+        candidates: [PlaceCandidate],
+        evidence: String
+    ) -> String? {
+        let addresses = PlaceQueryBuilder.completeAddresses(from: evidence)
+        guard addresses.count == 1,
+              candidates.count == 1,
+              let candidate = candidates.first,
+              let address = addresses.first,
+              PlaceQueryBuilder.address(
+                  candidate.place.address,
+                  matchesExtractedAddress: address
+              ) else {
+            return nil
+        }
+        return candidate.id
+    }
+
+    private func candidates(matching evidence: String) async throws -> [PlaceCandidate] {
+        let fixtures = Self.fixtureCandidates(matching: evidence)
+        guard fixtures.isEmpty,
+              !evidence.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let placeSearcher else {
+            return fixtures
+        }
+        return try await placeSearcher.search(evidence: evidence)
+    }
+
+    private static func fixtureCandidates(matching evidence: String) -> [PlaceCandidate] {
+        let normalized = evidence.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        let fixtures: [(aliases: [String], candidate: PlaceCandidate)] = [
+            (
+                ["levain", "cookie worth the line"],
+                PlaceCandidate(
+                    id: "fixture:levain",
+                    place: SampleData.levain,
+                    confidence: .high,
+                    reason: "Place name matched the shared text",
+                    estimatedCost: 6
+                )
+            ),
+            (
+                ["los tacos", "adobada taco", "chelsea market"],
+                PlaceCandidate(
+                    id: "fixture:los-tacos",
+                    place: SampleData.losTacos,
+                    confidence: .high,
+                    reason: "Restaurant and neighborhood matched",
+                    estimatedCost: 15
+                )
+            ),
+            (
+                ["hungarian pastry", "study spot near campus"],
+                PlaceCandidate(
+                    id: "fixture:hungarian-pastry",
+                    place: SampleData.hungarianPastry,
+                    confidence: .high,
+                    reason: "Place description matched the shared text",
+                    estimatedCost: 9
+                )
+            ),
+            (
+                ["little island", "pier 55"],
+                PlaceCandidate(
+                    id: "fixture:little-island",
+                    place: SampleData.littleIsland,
+                    confidence: .high,
+                    reason: "Place name matched the shared text",
+                    estimatedCost: 0
+                )
+            ),
+            (
+                ["met cloisters", "cloisters", "medieval castle"],
+                PlaceCandidate(
+                    id: "fixture:cloisters",
+                    place: SampleData.cloisters,
+                    confidence: .medium,
+                    reason: "Description and area matched",
+                    estimatedCost: 5
+                )
+            ),
+        ]
+
+        return fixtures
+            .filter { fixture in fixture.aliases.contains { normalized.localizedCaseInsensitiveContains($0) } }
+            .map(\.candidate)
+            .prefix(3)
+            .map { $0 }
+    }
+}
+
+struct MapKitPlaceSearcher: PlaceSearching {
+    func search(evidence: String) async throws -> [PlaceCandidate] {
+        var seen = Set<String>()
+        var candidates: [PlaceCandidate] = []
+        var completedSearch = false
+        var lastError: Error?
+
+        for query in PlaceQueryBuilder.queries(from: evidence) {
+            let requestedStreetNumber = PlaceQueryBuilder.streetNumber(from: query)
+            let request = MKLocalSearch.Request()
+            request.naturalLanguageQuery = query
+            request.resultTypes = .pointOfInterest
+            let response: MKLocalSearch.Response
+            do {
+                response = try await MKLocalSearch(request: request).start()
+                completedSearch = true
+            } catch {
+                lastError = error
+                continue
+            }
+
+            for item in response.mapItems {
+                guard let candidate = Self.candidate(from: item) else { continue }
+                if let requestedStreetNumber,
+                   !PlaceQueryBuilder.address(
+                       candidate.place.address,
+                       matchesStreetNumber: requestedStreetNumber
+                   ) {
+                    continue
+                }
+                let key = candidate.id
+                guard seen.insert(key).inserted else { continue }
+                candidates.append(candidate)
+                break
+            }
+            if candidates.count == 3 { return candidates }
+        }
+        if !completedSearch, let lastError {
+            throw lastError
+        }
+        return candidates
+    }
+
+    private static func candidate(from item: MKMapItem) -> PlaceCandidate? {
+        guard let name = item.name?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !name.isEmpty else {
+            return nil
+        }
+        let placemark = item.placemark
+        let coordinate = placemark.coordinate
+        let address = placemark.title ?? [placemark.subThoroughfare, placemark.thoroughfare]
+            .compactMap { $0 }
+            .joined(separator: " ")
+        let neighborhood = placemark.subLocality ?? placemark.locality ?? "Area unavailable"
+        let stableName = name.folding(
+            options: [.caseInsensitive, .diacriticInsensitive],
+            locale: .current
+        )
+        let id = "mapkit:\(stableName):\(coordinate.latitude):\(coordinate.longitude)"
+        return PlaceCandidate(
+            id: id,
+            place: Place(
+                name: name,
+                category: category(for: item.pointOfInterestCategory),
+                neighborhood: neighborhood,
+                address: address,
+                latitude: coordinate.latitude,
+                longitude: coordinate.longitude
+            ),
+            confidence: .medium,
+            reason: "Apple Maps matched the caption or approved text",
+            estimatedCost: nil
+        )
+    }
+
+    private static func category(for pointOfInterest: MKPointOfInterestCategory?) -> PlaceCategory {
+        switch pointOfInterest {
+        case .cafe:
+            return .coffee
+        case .restaurant, .bakery, .brewery, .foodMarket, .winery:
+            return .food
+        case .museum, .library, .theater:
+            return .culture
+        case .park, .beach, .nationalPark:
+            return .outdoors
+        case .nightlife:
+            return .nightlife
+        case .store:
+            return .shopping
+        default:
+            return .activity
+        }
+    }
+}
+
+enum PlaceQueryBuilder {
+    private static let completeAddressPattern = #"\b\d{1,6}\s+[\p{L}0-9.'-]+(?:\s+[\p{L}0-9.'-]+){0,3}\s+(?:st(?:reet)?|ave(?:nue)?|rd|road|blvd|boulevard|dr(?:ive)?|ln|lane|way|pl(?:ace)?|pkwy|parkway|sq(?:uare)?),?(?:\s+[\p{L}.'-]+){0,3},?\s+[A-Z]{2}(?:\s+\d{5})?\b"#
+
+    private struct PositionedPlaceName {
+        let name: String
+        let offset: Int
+    }
+
+    static func queries(from evidence: String) -> [String] {
+        let segmentedEvidence = evidence.replacingOccurrences(
+            of: #"[ \t]{2,}"#,
+            with: "\n",
+            options: .regularExpression
+        )
+        let cleanedLines = segmentedEvidence
+            .components(separatedBy: .newlines)
+            .map(clean)
+            .filter { $0.count >= 3 }
+        let cueLines = evidence
+            .components(separatedBy: .newlines)
+            .map(clean)
+            .filter { $0.count >= 3 }
+        var queries = positionedAddressQueries(from: evidence)
+        queries.append(contentsOf: adjacentAddressQueries(from: cleanedLines))
+
+        for line in cueLines {
+            if let cueQuery = queryAfterCue(in: line) {
+                queries.append(cueQuery)
+            }
+        }
+        for line in cleanedLines {
+            queries.append(String(line.prefix(140)))
+        }
+
+        var seen = Set<String>()
+        return queries.filter {
+            let key = $0.folding(
+                options: [.caseInsensitive, .diacriticInsensitive],
+                locale: .current
+            )
+            return seen.insert(key).inserted
+        }.prefix(3).map { $0 }
+    }
+
+    private static func positionedAddressQueries(from evidence: String) -> [String] {
+        guard let addressExpression = try? NSRegularExpression(
+            pattern: completeAddressPattern,
+            options: .caseInsensitive
+        ) else {
+            return []
+        }
+        let range = NSRange(evidence.startIndex..<evidence.endIndex, in: evidence)
+        let placeNames = positionedPlaceNames(from: evidence)
+        var addresses: [String] = []
+        var combinedQueries: [String] = []
+
+        for match in addressExpression.matches(in: evidence, range: range) {
+            let precedingPlaceName = placeNames
+                .filter { $0.offset <= match.range.location }
+                .max { $0.offset < $1.offset }
+            guard let addressRange = Range(match.range, in: evidence) else {
+                continue
+            }
+            let address = clean(String(evidence[addressRange]))
+            addresses.append(address)
+            if let placeName = precedingPlaceName ?? placeNames.min(by: {
+                $0.offset < $1.offset
+            }) {
+                combinedQueries.append("\(placeName.name) \(address)")
+            }
+        }
+        return addresses + combinedQueries
+    }
+
+    static func completeAddresses(from evidence: String) -> [String] {
+        guard let expression = try? NSRegularExpression(
+            pattern: completeAddressPattern,
+            options: .caseInsensitive
+        ) else {
+            return []
+        }
+        let range = NSRange(evidence.startIndex..<evidence.endIndex, in: evidence)
+        return expression.matches(in: evidence, range: range).compactMap { match in
+            Range(match.range, in: evidence).map {
+                clean(String(evidence[$0]))
+            }
+        }
+    }
+
+    private static func adjacentAddressQueries(from lines: [String]) -> [String] {
+        let pattern = #"\b\d{1,6}\s+[\p{L}0-9.'-]+(?:\s+[\p{L}0-9.'-]+){0,3}\s+(?:st(?:reet)?|ave(?:nue)?|rd|road|blvd|boulevard|dr(?:ive)?|ln|lane|way|pl(?:ace)?|pkwy|parkway|sq(?:uare)?)\b"#
+        guard let expression = try? NSRegularExpression(
+            pattern: pattern,
+            options: .caseInsensitive
+        ) else {
+            return []
+        }
+
+        return lines.indices.flatMap { index -> [String] in
+            let line = lines[index]
+            let range = NSRange(line.startIndex..<line.endIndex, in: line)
+            guard let match = expression.firstMatch(in: line, range: range),
+                  let addressRange = Range(match.range, in: line) else {
+                return []
+            }
+            var addressParts = [String(line[addressRange.lowerBound...])]
+            if !containsState(in: line), index < lines.index(before: lines.endIndex) {
+                addressParts.append(lines[lines.index(after: index)])
+            }
+            let address = addressParts.joined(separator: " ")
+            if index > lines.startIndex {
+                return ["\(lines[lines.index(before: index)]) \(address)"]
+            }
+            return [address]
+        }
+    }
+
+    private static func positionedPlaceNames(from evidence: String) -> [PositionedPlaceName] {
+        let patterns = [
+            #"(?:^|\n|:\s*["“”']?)\s*📍\s*(?!\d)([^\n\r]{2,60}?)(?=\r?(?:\n|$))"#,
+            #"@([^@\n.!?]{2,60}?)\s+is\s+(?:an?|the)\s+[^.\n!?]{0,80}?\b(?:restaurant|cafe|bakery|bar|shop|spot|market|store|venue)\b"#,
+            #"\bcalled\s+([^,\n.!?]{2,60})"#,
+            #"\bstopped\s+by\s+([^,\n.!?]{2,60})"#,
+            #"(?:^|[.!?]\s+)([^.!?\n]{2,60}?)\s*📍(?=\s*\d)"#,
+        ]
+        var names: [PositionedPlaceName] = []
+
+        for pattern in patterns {
+            guard let expression = try? NSRegularExpression(
+                pattern: pattern,
+                options: .caseInsensitive
+            ) else {
+                continue
+            }
+            let range = NSRange(evidence.startIndex..<evidence.endIndex, in: evidence)
+            for match in expression.matches(in: evidence, range: range) {
+                guard let captureRange = Range(match.range(at: 1), in: evidence) else {
+                    continue
+                }
+                let matchedText = Range(match.range, in: evidence)
+                    .map { String(evidence[$0]) } ?? ""
+                if matchedText.hasPrefix("@"),
+                   matchedText.range(
+                       of: #"\b(?:creator|reviewer|influencer|blogger|account|page|person|user|showing|reviewing|visiting|trying)\b"#,
+                       options: [.regularExpression, .caseInsensitive]
+                   ) != nil {
+                    continue
+                }
+                let name = clean(String(evidence[captureRange]))
+                if name.count >= 2 {
+                    names.append(PositionedPlaceName(
+                        name: name,
+                        offset: match.range.location
+                    ))
+                }
+            }
+        }
+
+        return names
+    }
+
+    private static func containsState(in text: String) -> Bool {
+        text.range(
+            of: #"(?:,\s*[A-Z]{2}\b|\b[A-Z]{2}\s+\d{5}\b)"#,
+            options: .regularExpression
+        ) != nil
+    }
+
+    static func streetNumber(from query: String) -> String? {
+        let pattern = #"(?<![$\d-])\b(\d{1,6}(?:-\d{1,6})?)\s+(?:[\p{L}0-9.'-]+\s+){1,4}(?:st(?:reet)?|ave(?:nue)?|rd|road|blvd|boulevard|dr(?:ive)?|ln|lane|way|pl(?:ace)?|pkwy|parkway|sq(?:uare)?)\b"#
+        guard let expression = try? NSRegularExpression(
+            pattern: pattern,
+            options: .caseInsensitive
+        ) else {
+            return nil
+        }
+        let range = NSRange(query.startIndex..<query.endIndex, in: query)
+        guard let match = expression.firstMatch(in: query, range: range),
+              let numberRange = Range(match.range(at: 1), in: query) else {
+            return nil
+        }
+        return String(query[numberRange])
+    }
+
+    static func address(_ address: String, matchesStreetNumber number: String) -> Bool {
+        guard let candidateNumber = streetNumber(from: address),
+              let requestedRange = numberRange(number),
+              let candidateRange = numberRange(candidateNumber) else {
+            return false
+        }
+        return requestedRange.overlaps(candidateRange)
+    }
+
+    static func address(
+        _ candidateAddress: String,
+        matchesExtractedAddress extractedAddress: String
+    ) -> Bool {
+        guard let requestedNumber = streetNumber(from: extractedAddress),
+              address(candidateAddress, matchesStreetNumber: requestedNumber),
+              let requestedState = stateCode(from: extractedAddress),
+              stateCode(from: candidateAddress) == requestedState else {
+            return false
+        }
+        let requestedTokens = streetNameTokens(from: extractedAddress)
+        let candidateTokens = streetNameTokens(from: candidateAddress)
+        let requestedDirection = streetDirection(from: extractedAddress)
+        let candidateDirection = streetDirection(from: candidateAddress)
+        guard requestedDirection == candidateDirection
+            || (requestedDirection == nil && candidateDirection == nil) else {
+            return false
+        }
+        return !requestedTokens.isEmpty
+            && !requestedTokens.isDisjoint(with: candidateTokens)
+    }
+
+    private static func stateCode(from address: String) -> String? {
+        let pattern = #",\s*([A-Z]{2})(?:\s+\d{5})?(?:,|$)"#
+        guard let expression = try? NSRegularExpression(
+            pattern: pattern,
+            options: .caseInsensitive
+        ) else {
+            return nil
+        }
+        let range = NSRange(address.startIndex..<address.endIndex, in: address)
+        guard let match = expression.firstMatch(in: address, range: range),
+              let stateRange = Range(match.range(at: 1), in: address) else {
+            return nil
+        }
+        return address[stateRange].uppercased()
+    }
+
+    private static func streetNameTokens(from address: String) -> Set<String> {
+        let suffixes: Set<String> = [
+            "st", "street", "ave", "avenue", "rd", "road", "blvd",
+            "boulevard", "dr", "drive", "ln", "lane", "way", "pl",
+            "place", "pkwy", "parkway", "sq", "square",
+        ]
+        let directions: Set<String> = [
+            "n", "s", "e", "w", "north", "south", "east", "west",
+        ]
+        let streetLine = address.split(separator: ",", maxSplits: 1).first.map(String.init) ?? address
+        let normalized = streetLine
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+        return Set(
+            normalized
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter {
+                    $0.count >= 2
+                        && Int($0) == nil
+                        && !suffixes.contains($0)
+                        && !directions.contains($0)
+                        && $0 != "ny"
+                        && $0 != "new"
+                        && $0 != "york"
+                        && $0 != "bronx"
+                        && $0 != "brooklyn"
+                        && $0 != "queens"
+                        && $0 != "staten"
+                        && $0 != "island"
+                }
+        )
+    }
+
+    private static func streetDirection(from address: String) -> String? {
+        let aliases = [
+            "n": "north", "north": "north",
+            "s": "south", "south": "south",
+            "e": "east", "east": "east",
+            "w": "west", "west": "west",
+        ]
+        let streetLine = address.split(separator: ",", maxSplits: 1).first.map(String.init) ?? address
+        let tokens = streetLine
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+        return tokens.compactMap { aliases[$0] }.first
+    }
+
+    private static func numberRange(_ value: String) -> ClosedRange<Int>? {
+        let parts = value.split(separator: "-", maxSplits: 1)
+        guard let lower = Int(parts[0]),
+              let upper = Int(parts.last ?? parts[0]) else {
+            return nil
+        }
+        return min(lower, upper)...max(lower, upper)
+    }
+
+    private static func clean(_ text: String) -> String {
+        text
+            .replacingOccurrences(
+                of: #"https?://\S+|@\w+"#,
+                with: "",
+                options: .regularExpression
+            )
+            .replacingOccurrences(
+                of: #"#([A-Za-z0-9_]+)"#,
+                with: "$1",
+                options: .regularExpression
+            )
+            .replacingOccurrences(
+                of: #"\s+"#,
+                with: " ",
+                options: .regularExpression
+            )
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func queryAfterCue(in text: String) -> String? {
+        let pattern = #"\b(?:check\s+out|stopped\s+by|at|visit|try|called)\s+(.+)"#
+        guard let expression = try? NSRegularExpression(
+            pattern: pattern,
+            options: .caseInsensitive
+        ) else {
+            return nil
+        }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = expression.firstMatch(in: text, range: range),
+              let captureRange = Range(match.range(at: 1), in: text) else {
+            return nil
+        }
+        let query = text[captureRange]
+            .components(separatedBy: CharacterSet(charactersIn: ".!?"))
+            .first
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        return query.flatMap { $0.count >= 3 ? $0 : nil }
+    }
+}
+
+struct FallbackSocialMetadataProvider: SocialMetadataProviding {
+    let primary: any SocialMetadataProviding
+    let fallback: any SocialMetadataProviding
+
+    func metadata(for url: URL) async throws -> SocialMetadata? {
+        do {
+            if let metadata = try await primary.metadata(for: url) {
+                return metadata
+            }
+        } catch let primaryError as DevelopmentSocialEvidenceError {
+            if let metadata = try? await fallback.metadata(for: url),
+               metadata.hasPlaceEvidence {
+                return metadata
+            }
+            throw primaryError
+        } catch {
+            return try await fallback.metadata(for: url)
+        }
+        return try await fallback.metadata(for: url)
+    }
+}
+
+enum DevelopmentSocialEvidenceError: LocalizedError, Equatable {
+    case dailyLimit
+
+    var errorDescription: String? {
+        switch self {
+        case .dailyLimit:
+            "Automatic imports are paused for today. Add the place name or address below, or use the saved video instead."
+        }
+    }
+}
+
+struct DevelopmentSocialEvidenceClient: SocialMetadataProviding {
+    private struct Response: Decodable {
+        let canonicalUrl: URL
+        let caption: String
+        let combinedText: String
+    }
+
+    private struct ErrorResponse: Decodable {
+        struct Detail: Decodable {
+            let code: String
+        }
+
+        let error: Detail
+    }
+
+    private let session: URLSession
+    private let endpoint: URL
+    private let accessTokenProvider: (any AccessTokenProviding)?
+
+    init(
+        session: URLSession = .shared,
+        endpoint: URL = URL(string: "http://127.0.0.1:8000/v1/social-evidence")!,
+        accessTokenProvider: (any AccessTokenProviding)? = nil
+    ) {
+        self.session = session
+        self.endpoint = endpoint
+        self.accessTokenProvider = accessTokenProvider
+    }
+
+    func metadata(for url: URL) async throws -> SocialMetadata? {
+        let accessToken = try await accessTokenProvider?.accessToken()
+        guard let request = try Self.request(
+            for: url,
+            endpoint: endpoint,
+            accessToken: accessToken
+        ) else {
+            return nil
+        }
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        if let providerError = Self.providerError(
+            statusCode: http.statusCode,
+            data: data
+        ) {
+            throw providerError
+        }
+        guard 200..<300 ~= http.statusCode else {
+            throw URLError(.badServerResponse)
+        }
+        let payload = try JSONDecoder().decode(Response.self, from: data)
+        let creator = payload.canonicalUrl.pathComponents
+            .first(where: { $0.hasPrefix("@") })
+        return SocialMetadata(
+            canonicalURL: payload.canonicalUrl,
+            title: payload.caption,
+            authorHandle: creator,
+            thumbnailURL: nil,
+            searchEvidence: payload.combinedText
+        )
+    }
+
+    static func providerError(
+        statusCode: Int,
+        data: Data
+    ) -> DevelopmentSocialEvidenceError? {
+        guard statusCode == 429,
+              let payload = try? JSONDecoder().decode(ErrorResponse.self, from: data),
+              payload.error.code == "provider_quota_exceeded" else {
+            return nil
+        }
+        return .dailyLimit
+    }
+
+    static func request(
+        for url: URL,
+        endpoint: URL = URL(string: "http://127.0.0.1:8000/v1/social-evidence")!,
+        accessToken: String? = nil
+    ) throws -> URLRequest? {
+        let supported = try SupportedSocialURL(url)
+        var request = URLRequest(
+            url: endpoint,
+            cachePolicy: .reloadIgnoringLocalCacheData,
+            timeoutInterval: 60
+        )
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let accessToken {
+            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = try JSONEncoder().encode([
+            "sourceUrl": supported.canonicalURL.absoluteString
+        ])
+        return request
+    }
+}
+
+struct TikTokOEmbedClient: SocialMetadataProviding {
+    private struct Response: Decodable {
+        let title: String?
+        let authorUniqueId: String?
+        let thumbnailUrl: URL?
+    }
+
+    func metadata(for url: URL) async throws -> SocialMetadata? {
+        let supported = try SupportedSocialURL(url)
+        guard supported.platform == .tiktok,
+              var components = URLComponents(string: "https://www.tiktok.com/oembed") else {
+            return nil
+        }
+        components.queryItems = [URLQueryItem(name: "url", value: supported.canonicalURL.absoluteString)]
+        guard let endpoint = components.url else { return nil }
+
+        let (data, response) = try await URLSession.shared.data(from: endpoint)
+        guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
+            throw URLError(.badServerResponse)
+        }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let payload = try decoder.decode(Response.self, from: data)
+        return SocialMetadata(
+            title: payload.title,
+            authorHandle: payload.authorUniqueId.map { "@\($0)" },
+            thumbnailURL: payload.thumbnailUrl
+        )
+    }
+}
